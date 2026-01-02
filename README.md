@@ -42,17 +42,14 @@ scoop install tdm-gcc
 
 **编译**：
 ```bash
-build-tdm.bat
+build.bat
 ```
 
 **输出**：`build\bin\SysProxyBar.exe` (约750KB)
 
 ### 运行程序
 
-双击 `SysProxyBar.exe` 或使用：
-```bash
-run.bat
-```
+双击 `SysProxyBar.exe`
 
 ## 使用说明
 
@@ -133,21 +130,6 @@ sys-proxy-bar/
 ├── run.bat                   # 运行脚本
 ├── CMakeLists.txt            # CMake配置
 └── README.md                 # 本文件
-```
-
-## 编译说明
-
-### 使用TDM-GCC（推荐）
-
-```bash
-# 1. 安装TDM-GCC
-scoop install tdm-gcc
-
-# 2. 运行构建脚本
-build-tdm.bat
-
-# 3. 输出文件
-build\bin\SysProxyBar.exe
 ```
 
 ## 常见问题
