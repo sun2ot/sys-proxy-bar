@@ -26,6 +26,17 @@ exit /b 1
 echo Found TDM-GCC at: %TDM_GCC%
 echo.
 
+REM Generate WebUI resource files
+echo Generating WebUI resources...
+pixi run python generate_resources.py
+if errorlevel 1 (
+    echo.
+    echo Failed to generate resources!
+    pause
+    exit /b 1
+)
+echo.
+
 REM Check version
 "%TDM_GCC%\gcc.exe" --version | findstr "gcc"
 echo.

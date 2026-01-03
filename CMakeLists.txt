@@ -16,6 +16,7 @@ set(SOURCES
     src/proxy_manager.cpp
     src/tray_icon.cpp
     src/settings_dialog.cpp
+    src/http_server.cpp
 )
 
 # 头文件
@@ -24,11 +25,14 @@ set(HEADERS
     src/tray_icon.h
     src/settings_dialog.h
     src/resource.h
+    src/http_server.h
+    src/webui_resource.h
 )
 
 # 资源文件（对话框、图标等）
 set(RESOURCES
     src/resource.rc
+    src/webui.rc
 )
 
 # 创建可执行文件（Windows GUI程序）
@@ -40,6 +44,7 @@ target_link_libraries(${PROJECT_NAME}
     shell32      # Shell功能（托盘图标等）
     gdi32        # GDI图形功能
     comctl32     # 通用控件
+    ws2_32       # Windows Sockets（HTTP服务器）
 )
 
 # ============== 编译选项 ==============

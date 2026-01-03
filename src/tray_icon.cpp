@@ -75,6 +75,9 @@ LRESULT TrayIcon::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_TRAY_ICON:
         if (lParam == WM_RBUTTONUP) {
             ShowContextMenu();
+        } else if (lParam == WM_LBUTTONDOWN) {
+            // 单击左键：打开 webui
+            PostMessage(m_hwnd, WM_COMMAND, IDM_OPEN_WEBUI, 0);
         } else if (lParam == WM_LBUTTONDBLCLK) {
             PostMessage(m_hwnd, WM_COMMAND, IDM_TOGGLE_PROXY, 0);
         }
@@ -85,6 +88,7 @@ LRESULT TrayIcon::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case IDM_TOGGLE_PROXY:
         case IDM_SETTINGS:
         case IDM_AUTOSTART:
+        case IDM_OPEN_WEBUI:
         case IDM_EXIT:
             PostMessage(m_hwnd, WM_COMMAND, wParam, lParam);
             break;

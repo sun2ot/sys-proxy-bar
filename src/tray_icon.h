@@ -11,6 +11,7 @@
 #define IDM_SETTINGS 2002
 #define IDM_AUTOSTART 2003
 #define IDM_EXIT 2004
+#define IDM_OPEN_WEBUI 2005
 
 class TrayIcon {
 public:
