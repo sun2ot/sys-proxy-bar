@@ -1,6 +1,7 @@
 # Build directories
 build/
 cmake-build-*/
+dist/
 
 # Visual Studio
 .vs/
@@ -42,3 +43,6 @@ docs
 # OS
 .DS_Store
 Thumbs.db
+# pixi environments
+.pixi/*
+!.pixi/config.toml

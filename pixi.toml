@@ -1,0 +1,11 @@
+[workspace]
+authors = ["sun2ot <84566015+sun2ot@users.noreply.github.com>"]
+channels = ["conda-forge"]
+name = "sys-proxy-bar"
+platforms = ["win-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = "3.11.*"
