@@ -55,7 +55,8 @@ def generate_resource_files(dist_dir="dist", output_rc="src/webui.rc", output_h=
             resource_id_num = 1000 + i
             # Calculate path relative to src/ directory
             relative_file_path = Path("..") / dist_dir / file_path
-            rc_file.write(f'{resource_id_num} RT_HTML "{relative_file_path.as_posix()}"\n')
+            # Use "WEBUI" as custom resource type to avoid conflicts
+            rc_file.write(f'{resource_id_num} WEBUI "{relative_file_path.as_posix()}"\n')
 
     print(f"Generated: {output_rc}")
 

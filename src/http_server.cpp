@@ -156,24 +156,27 @@ void HTTPServer::HandleClient(SOCKET clientSocket) {
 
     if (content.empty()) {
         // 404 Not Found
-        const char* response = "HTTP/1.1 404 Not Found\r\n"
+        std::string response = "HTTP/1.1 404 Not Found\r\n"
                               "Content-Type: text/html\r\n"
                               "Connection: close\r\n\r\n"
-                              "<html><body><h1>404 Not Found</h1></body></html>";
-        send(clientSocket, response, strlen(response), 0);
+                              "<html><body><h1>404 Not Found</h1><p>Path: ";
+        response += decodedPath;
+        response += "</p></body></html>";
+        send(clientSocket, response.c_str(), response.size(), 0);
     } else {
         // 构建响应
         std::string mimeType = GetMimeType(decodedPath);
 
         char header[512];
-        sprintf(header, "HTTP/1.1 200 OK\r\n"
+        int headerLen = sprintf(header, "HTTP/1.1 200 OK\r\n"
                         "Content-Type: %s\r\n"
-                        "Content-Length: %d\r\n"
+                        "Content-Length: %u\r\n"
                         "Connection: close\r\n"
-                        "Cache-Control: max-age=3600\r\n\r\n",
-                mimeType.c_str(), (int)content.size());
+                        "Cache-Control: no-cache\r\n\r\n",
+                mimeType.c_str(), (unsigned int)content.size());
 
-        send(clientSocket, header, strlen(header), 0);
+        // 发送头部和内容
+        send(clientSocket, header, headerLen, 0);
         send(clientSocket, content.data(), content.size(), 0);
     }
 
@@ -190,9 +193,9 @@ std::string HTTPServer::GetResourceData(const std::string& path) {
 
     int resourceId = it->second;
 
-    // 使用整数值查找资源
+    // 使用 WEBUI 自定义资源类型（由windres编译处理）
     HMODULE hModule = GetModuleHandle(NULL);
-    HRSRC hRes = FindResourceA(hModule, MAKEINTRESOURCEA(resourceId), "RT_HTML");
+    HRSRC hRes = FindResourceA(hModule, MAKEINTRESOURCEA(resourceId), "WEBUI");
 
     if (hRes == NULL) {
         return "";

@@ -126,35 +126,29 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (!g_httpServer) {
                 g_httpServer = new HTTPServer();
 
-                // 尝试多个端口
-                int ports[] = {10000, 9090, 8080, 8888};
-                bool started = false;
+                // 固定使用端口 12345
+                const int WEBUI_PORT = 12345;
 
-                for (int i = 0; i < 4; i++) {
-                    if (g_httpServer->Start(ports[i])) {
-                        started = true;
-                        // 在浏览器中打开
-                        char url[64];
-                        sprintf(url, "http://localhost:%d", ports[i]);
-                        ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOW);
-                        break;
-                    }
-                }
-
-                if (!started) {
+                if (g_httpServer->Start(WEBUI_PORT)) {
+                    // 服务器启动成功，在浏览器中打开
+                    char url[64];
+                    sprintf(url, "http://localhost:%d", WEBUI_PORT);
+                    ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOW);
+                } else {
+                    // 端口冲突，启动失败
                     MessageBoxA(hwnd,
-                        "无法启动 WebUI 服务器。\n"
+                        "端口12345冲突，启动失败！\n\n"
                         "可能原因：\n"
-                        "1. 端口 10000、9090、8080、8888 都被占用\n"
-                        "2. 防火墙阻止了网络访问\n"
-                        "3. 网络组件未正确初始化",
-                        "错误", MB_OK | MB_ICONERROR);
+                        "1. 端口 12345 被其他程序占用\n"
+                        "2. 防火墙阻止了网络访问\n\n"
+                        "请检查端口占用或关闭占用该端口的程序。",
+                        "WebUI 启动失败", MB_OK | MB_ICONERROR);
                     delete g_httpServer;
                     g_httpServer = nullptr;
                 }
             } else {
                 // 服务器已在运行，直接打开浏览器
-                ShellExecuteA(NULL, "open", "http://localhost:10000", NULL, NULL, SW_SHOW);
+                ShellExecuteA(NULL, "open", "http://localhost:12345", NULL, NULL, SW_SHOW);
             }
             break;
         }
