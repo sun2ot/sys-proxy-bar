@@ -2,9 +2,11 @@
 #include "resource.h"
 #include <stdio.h>
 
-TrayIcon::TrayIcon(HWND hwnd) : m_hwnd(hwnd), m_iconEnabled(NULL), m_iconDisabled(NULL), m_tunEnabled(false) {
+TrayIcon::TrayIcon(HWND hwnd)
+    : m_hwnd(hwnd), m_iconEnabled(NULL), m_iconDisabled(NULL), m_tunEnabled(false), m_isAdded(false) {
     ZeroMemory(&m_nid, sizeof(m_nid));
     LoadIcons();
+    UpdateIconState(false);
 }
 
 TrayIcon::~TrayIcon() {
@@ -31,34 +33,77 @@ bool TrayIcon::LoadIcons() {
     return (m_iconEnabled != NULL) && (m_iconDisabled != NULL);
 }
 
+void TrayIcon::UpdateIconState(bool proxyEnabled) {
+    m_nid.hIcon = proxyEnabled ? m_iconEnabled : m_iconDisabled;
+    strcpy_s(m_nid.szTip, proxyEnabled ? "系统代理 - 已开启" : "系统代理 - 已关闭");
+}
+
 HICON TrayIcon::CreateColorIcon(COLORREF color) {
     // 此函数已弃用，保留以免编译错误
     return LoadIcon(NULL, IDI_APPLICATION);
 }
 
 bool TrayIcon::Add() {
+    if (m_isAdded) {
+        return true;
+    }
+
     m_nid.cbSize = sizeof(NOTIFYICONDATAA);
     m_nid.hWnd = m_hwnd;
     m_nid.uID = ID_TRAY_ICON;
     m_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     m_nid.uCallbackMessage = WM_TRAY_ICON;
-    m_nid.hIcon = m_iconDisabled;
-    strcpy_s(m_nid.szTip, "系统代理 - 已关闭");
+    if (m_nid.hIcon == NULL) {
+        UpdateIconState(false);
+    }
 
-    return Shell_NotifyIconA(NIM_ADD, &m_nid) != FALSE;
+    if (!Shell_NotifyIconA(NIM_ADD, &m_nid)) {
+        return false;
+    }
+
+#ifdef NOTIFYICON_VERSION_4
+    m_nid.uVersion = NOTIFYICON_VERSION_4;
+#else
+    m_nid.uVersion = NOTIFYICON_VERSION;
+#endif
+    Shell_NotifyIconA(NIM_SETVERSION, &m_nid);
+    m_isAdded = true;
+    return true;
 }
 
 bool TrayIcon::Remove() {
+    if (!m_isAdded) {
+        return true;
+    }
+
     m_nid.uFlags = 0;
-    return Shell_NotifyIconA(NIM_DELETE, &m_nid) != FALSE;
+    if (!Shell_NotifyIconA(NIM_DELETE, &m_nid)) {
+        return false;
+    }
+
+    m_isAdded = false;
+    return true;
 }
 
 bool TrayIcon::Update(bool proxyEnabled) {
-    m_nid.uFlags = NIF_ICON | NIF_TIP;
-    m_nid.hIcon = proxyEnabled ? m_iconEnabled : m_iconDisabled;
-    strcpy_s(m_nid.szTip, proxyEnabled ? "系统代理 - 已开启" : "系统代理 - 已关闭");
+    UpdateIconState(proxyEnabled);
 
-    return Shell_NotifyIconA(NIM_MODIFY, &m_nid) != FALSE;
+    if (!m_isAdded) {
+        return true;
+    }
+
+    m_nid.uFlags = NIF_ICON | NIF_TIP;
+
+    if (!Shell_NotifyIconA(NIM_MODIFY, &m_nid)) {
+        m_isAdded = false;
+        return false;
+    }
+
+    return true;
+}
+
+bool TrayIcon::IsAdded() const {
+    return m_isAdded;
 }
 
 void TrayIcon::SetTunEnabled(bool tunEnabled) {

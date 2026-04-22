@@ -4,6 +4,8 @@
 #include "http_server.h"
 #include "mihomo_manager.h"
 #include <string>
+#include <taskschd.h>
+#include <sddl.h>
 
 // 全局变量
 TrayIcon* g_trayIcon = nullptr;
@@ -12,6 +14,376 @@ MihomoManager* g_mihomoManager = nullptr;
 std::string g_proxyServer = "127.0.0.1";
 int g_proxyPort = 7890;
 std::string g_proxyBypass = "localhost;127.*;<local>";
+const char* kLegacyAutoStartValueName = "SysProxyBar";
+const wchar_t* kAutoStartTaskName = L"SysProxyBar";
+const UINT_PTR kTrayRetryTimerId = 1;
+const UINT kTrayRetryIntervalMs = 1000;
+UINT g_taskbarCreatedMessage = 0;
+
+template <typename T>
+void SafeRelease(T** value) {
+    if (*value) {
+        (*value)->Release();
+        *value = nullptr;
+    }
+}
+
+class ScopedComInit {
+public:
+    ScopedComInit() : m_initialized(false), m_shouldUninitialize(false) {
+        HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+        if (SUCCEEDED(hr) || hr == S_FALSE) {
+            m_initialized = true;
+            m_shouldUninitialize = true;
+        } else if (hr == RPC_E_CHANGED_MODE) {
+            m_initialized = true;
+        }
+    }
+
+    ~ScopedComInit() {
+        if (m_shouldUninitialize) {
+            CoUninitialize();
+        }
+    }
+
+    bool IsInitialized() const {
+        return m_initialized;
+    }
+
+private:
+    bool m_initialized;
+    bool m_shouldUninitialize;
+};
+
+std::wstring GetCurrentExePathW() {
+    wchar_t exePath[MAX_PATH];
+    DWORD length = GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) {
+        return L"";
+    }
+    return std::wstring(exePath, length);
+}
+
+std::wstring GetCurrentUserSidString() {
+    HANDLE token = NULL;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return L"";
+    }
+
+    DWORD size = 0;
+    GetTokenInformation(token, TokenUser, NULL, 0, &size);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) {
+        CloseHandle(token);
+        return L"";
+    }
+
+    BYTE* buffer = new BYTE[size];
+    if (!GetTokenInformation(token, TokenUser, buffer, size, &size)) {
+        delete[] buffer;
+        CloseHandle(token);
+        return L"";
+    }
+
+    TOKEN_USER* tokenUser = reinterpret_cast<TOKEN_USER*>(buffer);
+    LPWSTR sidString = NULL;
+    std::wstring result;
+    if (ConvertSidToStringSidW(tokenUser->User.Sid, &sidString)) {
+        result = sidString;
+        LocalFree(sidString);
+    }
+
+    delete[] buffer;
+    CloseHandle(token);
+    return result;
+}
+
+bool IsLegacyAutoStartEnabled() {
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    char buffer[MAX_PATH];
+    DWORD size = sizeof(buffer);
+    DWORD type = REG_SZ;
+    bool result = (RegQueryValueExA(hKey, kLegacyAutoStartValueName, NULL, &type, (LPBYTE)buffer, &size) == ERROR_SUCCESS);
+
+    RegCloseKey(hKey);
+    return result;
+}
+
+bool RemoveLegacyAutoStart() {
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    LONG result = RegDeleteValueA(hKey, kLegacyAutoStartValueName);
+    RegCloseKey(hKey);
+    return result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND;
+}
+
+bool GetTaskSchedulerRootFolder(ITaskService** service, ITaskFolder** rootFolder) {
+    *service = NULL;
+    *rootFolder = NULL;
+
+    HRESULT hr = CoCreateInstance(CLSID_TaskScheduler, NULL, CLSCTX_INPROC_SERVER, IID_ITaskService, reinterpret_cast<void**>(service));
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    hr = CoInitializeSecurity(
+        NULL,
+        -1,
+        NULL,
+        NULL,
+        RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
+        RPC_C_IMP_LEVEL_IMPERSONATE,
+        NULL,
+        0,
+        NULL
+    );
+    if (FAILED(hr) && hr != RPC_E_TOO_LATE) {
+        SafeRelease(service);
+        return false;
+    }
+
+    VARIANT empty;
+    VariantInit(&empty);
+    hr = (*service)->Connect(empty, empty, empty, empty);
+    if (FAILED(hr)) {
+        SafeRelease(service);
+        return false;
+    }
+
+    BSTR folderPath = SysAllocString(L"\\");
+    hr = (*service)->GetFolder(folderPath, rootFolder);
+    SysFreeString(folderPath);
+    if (FAILED(hr)) {
+        SafeRelease(service);
+        return false;
+    }
+
+    return true;
+}
+
+bool IsScheduledAutoStartEnabled() {
+    ScopedComInit comInit;
+    if (!comInit.IsInitialized()) {
+        return false;
+    }
+
+    ITaskService* service = NULL;
+    ITaskFolder* rootFolder = NULL;
+    IRegisteredTask* registeredTask = NULL;
+
+    if (!GetTaskSchedulerRootFolder(&service, &rootFolder)) {
+        return false;
+    }
+
+    BSTR taskName = SysAllocString(kAutoStartTaskName);
+    HRESULT hr = rootFolder->GetTask(taskName, &registeredTask);
+    SysFreeString(taskName);
+
+    SafeRelease(&registeredTask);
+    SafeRelease(&rootFolder);
+    SafeRelease(&service);
+    return SUCCEEDED(hr);
+}
+
+bool SetScheduledAutoStart(bool enable) {
+    ScopedComInit comInit;
+    if (!comInit.IsInitialized()) {
+        return false;
+    }
+
+    ITaskService* service = NULL;
+    ITaskFolder* rootFolder = NULL;
+
+    if (!GetTaskSchedulerRootFolder(&service, &rootFolder)) {
+        return false;
+    }
+
+    bool success = false;
+    BSTR taskName = SysAllocString(kAutoStartTaskName);
+
+    if (!enable) {
+        HRESULT hr = rootFolder->DeleteTask(taskName, 0);
+        success = (SUCCEEDED(hr) || hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+        SysFreeString(taskName);
+        SafeRelease(&rootFolder);
+        SafeRelease(&service);
+        return success;
+    }
+
+    std::wstring exePath = GetCurrentExePathW();
+    std::wstring userSid = GetCurrentUserSidString();
+    if (exePath.empty() || userSid.empty()) {
+        SysFreeString(taskName);
+        SafeRelease(&rootFolder);
+        SafeRelease(&service);
+        return false;
+    }
+
+    ITaskDefinition* task = NULL;
+    IRegistrationInfo* registrationInfo = NULL;
+    IPrincipal* principal = NULL;
+    ITaskSettings* settings = NULL;
+    ITriggerCollection* triggers = NULL;
+    ITrigger* trigger = NULL;
+    IActionCollection* actions = NULL;
+    IAction* action = NULL;
+    IExecAction* execAction = NULL;
+    IRegisteredTask* registeredTask = NULL;
+
+    HRESULT hr = service->NewTask(0, &task);
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    hr = task->get_RegistrationInfo(&registrationInfo);
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    {
+        BSTR author = SysAllocString(L"SysProxyBar");
+        registrationInfo->put_Author(author);
+        SysFreeString(author);
+    }
+
+    hr = task->get_Principal(&principal);
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    {
+        BSTR principalId = SysAllocString(L"SysProxyBarPrincipal");
+        BSTR principalUser = SysAllocString(userSid.c_str());
+        principal->put_Id(principalId);
+        hr = principal->put_UserId(principalUser);
+        SysFreeString(principalUser);
+        SysFreeString(principalId);
+        if (FAILED(hr)) {
+            goto cleanup;
+        }
+    }
+
+    hr = principal->put_LogonType(TASK_LOGON_INTERACTIVE_TOKEN);
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    hr = principal->put_RunLevel(TASK_RUNLEVEL_HIGHEST);
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    hr = task->get_Settings(&settings);
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    settings->put_StartWhenAvailable(VARIANT_TRUE);
+    settings->put_Enabled(VARIANT_TRUE);
+    settings->put_DisallowStartIfOnBatteries(VARIANT_FALSE);
+    settings->put_StopIfGoingOnBatteries(VARIANT_FALSE);
+    settings->put_MultipleInstances(TASK_INSTANCES_IGNORE_NEW);
+
+    hr = task->get_Triggers(&triggers);
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    hr = triggers->Create(TASK_TRIGGER_LOGON, &trigger);
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    {
+        BSTR triggerId = SysAllocString(L"SysProxyBarLogonTrigger");
+        hr = trigger->put_Id(triggerId);
+        SysFreeString(triggerId);
+        if (FAILED(hr)) {
+            goto cleanup;
+        }
+    }
+
+    hr = trigger->put_Enabled(VARIANT_TRUE);
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    hr = task->get_Actions(&actions);
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    hr = actions->Create(TASK_ACTION_EXEC, &action);
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    hr = action->QueryInterface(IID_IExecAction, reinterpret_cast<void**>(&execAction));
+    if (FAILED(hr)) {
+        goto cleanup;
+    }
+
+    {
+        BSTR actionPath = SysAllocString(exePath.c_str());
+        hr = execAction->put_Path(actionPath);
+        SysFreeString(actionPath);
+        if (FAILED(hr)) {
+            goto cleanup;
+        }
+    }
+
+    {
+        VARIANT userIdValue;
+        VARIANT emptyValue;
+        VARIANT sddlValue;
+        VariantInit(&userIdValue);
+        VariantInit(&emptyValue);
+        VariantInit(&sddlValue);
+
+        userIdValue.vt = VT_BSTR;
+        userIdValue.bstrVal = SysAllocString(userSid.c_str());
+
+        hr = rootFolder->RegisterTaskDefinition(
+            taskName,
+            task,
+            TASK_CREATE_OR_UPDATE,
+            userIdValue,
+            emptyValue,
+            TASK_LOGON_INTERACTIVE_TOKEN,
+            sddlValue,
+            &registeredTask
+        );
+
+        VariantClear(&userIdValue);
+        if (FAILED(hr)) {
+            goto cleanup;
+        }
+    }
+
+    success = true;
+
+cleanup:
+    SysFreeString(taskName);
+    SafeRelease(&registeredTask);
+    SafeRelease(&execAction);
+    SafeRelease(&action);
+    SafeRelease(&actions);
+    SafeRelease(&trigger);
+    SafeRelease(&triggers);
+    SafeRelease(&settings);
+    SafeRelease(&principal);
+    SafeRelease(&registrationInfo);
+    SafeRelease(&task);
+    SafeRelease(&rootFolder);
+    SafeRelease(&service);
+    return success;
+}
 
 bool IsRunningAsAdmin() {
     BOOL isAdmin = FALSE;
@@ -49,44 +421,32 @@ void UpdateTrayState() {
     }
 }
 
-// 设置开机自启动
-bool SetAutoStart(bool enable) {
-    HKEY hKey;
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey) != ERROR_SUCCESS) {
+bool EnsureTrayIconAdded(HWND hwnd) {
+    if (!g_trayIcon) {
         return false;
     }
 
-    if (enable) {
-        // 获取当前正在运行的 exe 路径（而不是固定路径）
-        char exePath[MAX_PATH];
-        GetModuleFileNameA(NULL, exePath, MAX_PATH);
-
-        // 每次都写入当前路径，这样版本更新后会自动指向新版本
-        if (RegSetValueExA(hKey, "SysProxyBar", 0, REG_SZ, (const BYTE*)exePath, strlen(exePath) + 1) != ERROR_SUCCESS) {
-            RegCloseKey(hKey);
-            return false;
-        }
-    } else {
-        RegDeleteValueA(hKey, "SysProxyBar");
+    if (g_trayIcon->IsAdded() || g_trayIcon->Add()) {
+        KillTimer(hwnd, kTrayRetryTimerId);
+        UpdateTrayState();
+        return true;
     }
 
-    RegCloseKey(hKey);
-    return true;
+    SetTimer(hwnd, kTrayRetryTimerId, kTrayRetryIntervalMs, NULL);
+    return false;
+}
+
+// 设置开机自启动
+bool SetAutoStart(bool enable) {
+    if (!SetScheduledAutoStart(enable)) {
+        return false;
+    }
+
+    return RemoveLegacyAutoStart();
 }
 
 bool IsAutoStartEnabled() {
-    HKEY hKey;
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
-        return false;
-    }
-
-    char buffer[MAX_PATH];
-    DWORD size = sizeof(buffer);
-    DWORD type = REG_SZ;
-    bool result = (RegQueryValueExA(hKey, "SysProxyBar", NULL, &type, (LPBYTE)buffer, &size) == ERROR_SUCCESS);
-
-    RegCloseKey(hKey);
-    return result;
+    return IsScheduledAutoStartEnabled() || IsLegacyAutoStartEnabled();
 }
 
 // 加载配置
@@ -116,13 +476,15 @@ void ToggleProxy() {
 
 // 窗口过程
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (g_taskbarCreatedMessage != 0 && message == g_taskbarCreatedMessage) {
+        EnsureTrayIconAdded(hwnd);
+        return 0;
+    }
+
     switch (message) {
     case WM_CREATE:
         g_trayIcon = new TrayIcon(hwnd);
-        if (!g_trayIcon->Add()) {
-            MessageBoxA(hwnd, "无法创建托盘图标", "错误", MB_ICONERROR);
-            PostQuitMessage(1);
-        }
+        EnsureTrayIconAdded(hwnd);
 
         // 初始化图标状态
         UpdateTrayState();
@@ -135,6 +497,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             MessageBoxA(hwnd, "Mihomo 启动失败", "警告", MB_OK | MB_ICONWARNING);
         }
         UpdateTrayState();
+        EnsureTrayIconAdded(hwnd);
         break;
 
     case WM_TRAY_ICON:
@@ -262,7 +625,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         break;
 
+    case WM_TIMER:
+        if (wParam == kTrayRetryTimerId) {
+            EnsureTrayIconAdded(hwnd);
+            return 0;
+        }
+        break;
+
     case WM_DESTROY:
+        KillTimer(hwnd, kTrayRetryTimerId);
         // 停止 mihomo
         if (g_mihomoManager) {
             g_mihomoManager->Stop();
@@ -299,6 +670,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             "SysProxyBar 需要管理员权限启动，以支持 TUN Mode 和相关网络配置。",
             "需要管理员权限", MB_OK | MB_ICONWARNING);
         return 1;
+    }
+
+    if (IsAutoStartEnabled()) {
+        SetAutoStart(true);
     }
 
     // 单实例检查
@@ -338,6 +713,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             return 1;
         }
     }
+
+    g_taskbarCreatedMessage = RegisterWindowMessageA("TaskbarCreated");
 
     // 创建隐藏窗口
     HWND hwnd = CreateWindowExA(

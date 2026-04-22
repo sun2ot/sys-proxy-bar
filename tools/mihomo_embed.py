@@ -12,7 +12,7 @@ from pathlib import Path
 from generate_mihomo_manifest import generate_manifest
 
 # Mihomo version to download
-MIHOMO_VERSION = "v1.19.23"
+MIHOMO_VERSION = "v1.19.24"
 MIHOMO_URL = f"https://github.com/MetaCubeX/mihomo/releases/download/{MIHOMO_VERSION}/mihomo-windows-amd64-v3-{MIHOMO_VERSION}.zip"
 OUTPUT_DIR = Path("tools/mihomo")
 

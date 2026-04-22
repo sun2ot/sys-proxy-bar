@@ -25,6 +25,7 @@ public:
     bool Add();
     bool Remove();
     bool Update(bool proxyEnabled);
+    bool IsAdded() const;
     void SetTunEnabled(bool tunEnabled);
     LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam);
 
@@ -34,8 +35,10 @@ private:
     HICON m_iconEnabled;
     HICON m_iconDisabled;
     bool m_tunEnabled;
+    bool m_isAdded;
 
     bool LoadIcons();
+    void UpdateIconState(bool proxyEnabled);
     void ShowContextMenu();
     HICON CreateColorIcon(COLORREF color);
 };
